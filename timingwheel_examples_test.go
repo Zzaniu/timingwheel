@@ -8,11 +8,11 @@ import (
 )
 
 func Example_startTimer() {
-	tw := timingwheel.NewTimingWheel(time.Millisecond, 20)
+	tw := timingwheel.NewTimingWheel(time.Second, 20)
 	tw.Start()
 	defer tw.Stop()
 
-	exitC := make(chan time.Time, 1)
+	exitC := make(chan time.Time, 2)
 	tw.AfterFunc(time.Second, func() {
 		fmt.Println("The timer fires")
 		exitC <- time.Now().UTC()

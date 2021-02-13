@@ -59,9 +59,11 @@ type bucket struct {
 	//
 	// For more explanations, see https://golang.org/pkg/sync/atomic/#pkg-note-BUG
 	// and https://go101.org/article/memory-layout.html.
+	// 任务的过期时间
 	expiration int64
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// 相同过期时间的任务队列
 	timers *list.List
 }
 
@@ -115,10 +117,12 @@ func (b *bucket) Flush(reinsert func(*Timer)) {
 	var ts []*Timer
 
 	b.mu.Lock()
+	// 循环获取bucket队列节点
 	for e := b.timers.Front(); e != nil; {
 		next := e.Next()
 
 		t := e.Value.(*Timer)
+		// 将头节点移除bucket队列
 		b.remove(t)
 		ts = append(ts, t)
 

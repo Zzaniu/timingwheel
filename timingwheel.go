@@ -11,17 +11,23 @@ import (
 
 // TimingWheel is an implementation of Hierarchical Timing Wheels.
 type TimingWheel struct {
-	tick      int64 // in milliseconds
+	// 时间跨度,单位是毫秒
+	tick int64 // in milliseconds
+	// 时间轮个数
 	wheelSize int64
-
-	interval    int64 // in milliseconds
+	// 总跨度
+	interval int64 // in milliseconds
+	// 当前指针指向时间
 	currentTime int64 // in milliseconds
-	buckets     []*bucket
-	queue       *delayqueue.DelayQueue
+	// 时间格列表
+	buckets []*bucket
+	// 延迟队列
+	queue *delayqueue.DelayQueue
 
 	// The higher-level overflow wheel.
 	//
 	// NOTE: This field may be updated and read concurrently, through Add().
+	// 上级的时间轮饮用
 	overflowWheel unsafe.Pointer // type: *TimingWheel
 
 	exitC     chan struct{}
@@ -65,16 +71,21 @@ func newTimingWheel(tickMs int64, wheelSize int64, startMs int64, queue *delayqu
 // add inserts the timer t into the current timing wheel.
 func (tw *TimingWheel) add(t *Timer) bool {
 	currentTime := atomic.LoadInt64(&tw.currentTime)
+	// 已经过期
 	if t.expiration < currentTime+tw.tick {
 		// Already expired
 		return false
+		// 	到期时间在第一层环内
 	} else if t.expiration < currentTime+tw.interval {
 		// Put it into its own bucket
+		// 获取时间轮的位置
 		virtualID := t.expiration / tw.tick
 		b := tw.buckets[virtualID%tw.wheelSize]
+		// 将任务放入到bucket队列中
 		b.Add(t)
 
 		// Set the bucket expiration time
+		// 如果是相同的时间，那么返回false，防止被多次插入到队列中
 		if b.SetExpiration(virtualID * tw.tick) {
 			// The bucket needs to be enqueued since it was an expired bucket.
 			// We only need to enqueue the bucket when its expiration time has changed,
@@ -82,17 +93,20 @@ func (tw *TimingWheel) add(t *Timer) bool {
 			// Any further calls to set the expiration within the same wheel cycle will
 			// pass in the same value and hence return false, thus the bucket with the
 			// same expiration will not be enqueued multiple times.
+			// 将该bucket加入到延迟队列中
 			tw.queue.Offer(b, b.Expiration())
 		}
 
 		return true
 	} else {
 		// Out of the interval. Put it into the overflow wheel
+		// 如果放入的到期时间超过第一层时间轮，那么放到上一层中去
 		overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
 		if overflowWheel == nil {
 			atomic.CompareAndSwapPointer(
 				&tw.overflowWheel,
 				nil,
+				// 需要注意的是，这里tick变成了interval
 				unsafe.Pointer(newTimingWheel(
 					tw.interval,
 					tw.wheelSize,
@@ -102,6 +116,7 @@ func (tw *TimingWheel) add(t *Timer) bool {
 			)
 			overflowWheel = atomic.LoadPointer(&tw.overflowWheel)
 		}
+		// 往上递归
 		return (*TimingWheel)(overflowWheel).add(t)
 	}
 }
@@ -109,22 +124,27 @@ func (tw *TimingWheel) add(t *Timer) bool {
 // addOrRun inserts the timer t into the current timing wheel, or run the
 // timer's task if it has already expired.
 func (tw *TimingWheel) addOrRun(t *Timer) {
+	// 如果已经过期，那么直接执行
 	if !tw.add(t) {
 		// Already expired
 
 		// Like the standard time.AfterFunc (https://golang.org/pkg/time/#AfterFunc),
 		// always execute the timer's task in its own goroutine.
+		// 异步执行定时任务
 		go t.task()
 	}
 }
 
 func (tw *TimingWheel) advanceClock(expiration int64) {
 	currentTime := atomic.LoadInt64(&tw.currentTime)
+	// 过期时间大于等于（当前时间+tick）
 	if expiration >= currentTime+tw.tick {
+		// 将currentTime设置为expiration，从而推进currentTime
 		currentTime = truncate(expiration, tw.tick)
 		atomic.StoreInt64(&tw.currentTime, currentTime)
 
 		// Try to advance the clock of the overflow wheel if present
+		// 如果有上层时间轮，那么递归调用上层时间轮的引用
 		overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
 		if overflowWheel != nil {
 			(*TimingWheel)(overflowWheel).advanceClock(currentTime)
@@ -134,18 +154,22 @@ func (tw *TimingWheel) advanceClock(expiration int64) {
 
 // Start starts the current timing wheel.
 func (tw *TimingWheel) Start() {
+	// Poll会执行一个无限循环，将到期的元素放入到queue的C管道中
 	tw.waitGroup.Wrap(func() {
 		tw.queue.Poll(tw.exitC, func() int64 {
 			return timeToMs(time.Now().UTC())
 		})
 	})
-
+	// 开启无限循环获取queue中C的数据
 	tw.waitGroup.Wrap(func() {
 		for {
 			select {
+			// 从队列里面出来的数据都是到期的bucket
 			case elem := <-tw.queue.C:
 				b := elem.(*bucket)
+				// 时间轮会将当前时间 currentTime 往前移动到 bucket的到期时间
 				tw.advanceClock(b.Expiration())
+				// 取出bucket队列的数据，并调用addOrRun方法执行
 				b.Flush(tw.addOrRun)
 			case <-tw.exitC:
 				return
