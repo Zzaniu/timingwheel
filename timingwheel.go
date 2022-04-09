@@ -27,7 +27,7 @@ type TimingWheel struct {
 	// The higher-level overflow wheel.
 	//
 	// NOTE: This field may be updated and read concurrently, through Add().
-	// 上级的时间轮饮用
+	// 上级的时间轮引用
 	overflowWheel unsafe.Pointer // type: *TimingWheel
 
 	exitC     chan struct{}
@@ -36,11 +36,13 @@ type TimingWheel struct {
 
 // NewTimingWheel creates an instance of TimingWheel with the given tick and wheelSize.
 func NewTimingWheel(tick time.Duration, wheelSize int64) *TimingWheel {
+	// 转换为 ms
 	tickMs := int64(tick / time.Millisecond)
 	if tickMs <= 0 {
 		panic(errors.New("tick must be greater than or equal to 1ms"))
 	}
 
+	// 起始时间，单位 ms
 	startMs := timeToMs(time.Now().UTC())
 
 	return newTimingWheel(

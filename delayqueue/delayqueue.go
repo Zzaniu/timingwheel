@@ -28,34 +28,42 @@ func (pq priorityQueue) Len() int {
 	return len(pq)
 }
 
+// Less < 就是从小到大排序, 所以是一个小顶堆
 func (pq priorityQueue) Less(i, j int) bool {
+	// 按照优先级来排序
 	return pq[i].Priority < pq[j].Priority
 }
 
 func (pq priorityQueue) Swap(i, j int) {
+	// 交换位置，并交换 index(index就是他的位置)
 	pq[i], pq[j] = pq[j], pq[i]
 	pq[i].Index = i
 	pq[j].Index = j
 }
 
+// Push 插入一个 item 放在最后
 func (pq *priorityQueue) Push(x interface{}) {
 	n := len(*pq)
 	c := cap(*pq)
 	if n+1 > c {
+		// 扩容
 		npq := make(priorityQueue, n, c*2)
 		copy(npq, *pq)
 		*pq = npq
 	}
+	// 这种用法还真的是新颖...
 	*pq = (*pq)[0 : n+1]
 	item := x.(*item)
 	item.Index = n
 	(*pq)[n] = item
 }
 
+// Pop 弹出最后一个 item
 func (pq *priorityQueue) Pop() interface{} {
 	n := len(*pq)
 	c := cap(*pq)
 	if n < (c/2) && c > 25 {
+		// 缩容
 		npq := make(priorityQueue, n, c/2)
 		copy(npq, *pq)
 		*pq = npq
@@ -66,6 +74,9 @@ func (pq *priorityQueue) Pop() interface{} {
 	return item
 }
 
+// PeekAndShift 移除顶点小于 max 的节点
+// 如果顶点的优先级都大于 max 的话, 说明没有节点需要被移除
+// priorityQueue 是一个小顶堆
 func (pq *priorityQueue) PeekAndShift(max int64) (*item, int64) {
 	if pq.Len() == 0 {
 		return nil, 0
@@ -75,6 +86,8 @@ func (pq *priorityQueue) PeekAndShift(max int64) (*item, int64) {
 	if item.Priority > max {
 		return nil, item.Priority - max
 	}
+	// 这里就是移除一个节点(把顶点移除掉, 涉及到尾结点和顶点调换位置, 然后调用 down 和 up 进行修复, down 和 up 会调用 Swap 来调节)
+	// 因为 priorityQueue 实现了 heap.Interface 接口, 所以其实就是一个 heap, 可以用 heap 的方法来操作
 	heap.Remove(pq, 0)
 
 	return item, 0
