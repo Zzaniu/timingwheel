@@ -21,7 +21,7 @@ type TimingWheel struct {
 	currentTime int64 // in milliseconds
 	// 时间格列表
 	buckets []*bucket
-	// 延迟队列
+	// 延迟队列(优先级队列/小顶堆). 从这个队列里面不停的取出到期的任务，并执行
 	queue *delayqueue.DelayQueue
 
 	// The higher-level overflow wheel.
@@ -62,9 +62,9 @@ func newTimingWheel(tickMs int64, wheelSize int64, startMs int64, queue *delayqu
 	return &TimingWheel{
 		tick:        tickMs,
 		wheelSize:   wheelSize,
-		currentTime: truncate(startMs, tickMs),
-		interval:    tickMs * wheelSize,
-		buckets:     buckets,
+		currentTime: truncate(startMs, tickMs), // 使 currentTime 刻度对齐在左边
+		interval:    tickMs * wheelSize,        // 一圈的时间跨度
+		buckets:     buckets,                   // 时间格列表
 		queue:       queue,
 		exitC:       make(chan struct{}),
 	}
@@ -83,11 +83,11 @@ func (tw *TimingWheel) add(t *Timer) bool {
 		// 获取时间轮的位置
 		virtualID := t.expiration / tw.tick
 		b := tw.buckets[virtualID%tw.wheelSize]
-		// 将任务放入到bucket队列中
+		// 将任务放入到bucket链表中
 		b.Add(t)
 
 		// Set the bucket expiration time
-		// 如果是相同的时间，那么返回false，防止被多次插入到队列中
+		// 如果是相同的时间，那么队列里面已经有了的呀, 这种情况直接返回false，防止被多次插入到队列中
 		if b.SetExpiration(virtualID * tw.tick) {
 			// The bucket needs to be enqueued since it was an expired bucket.
 			// We only need to enqueue the bucket when its expiration time has changed,
@@ -95,7 +95,7 @@ func (tw *TimingWheel) add(t *Timer) bool {
 			// Any further calls to set the expiration within the same wheel cycle will
 			// pass in the same value and hence return false, thus the bucket with the
 			// same expiration will not be enqueued multiple times.
-			// 将该bucket加入到延迟队列中
+			// 如果该 bucket 不在延时队列中, 则将该 bucket 加入到延迟队列中
 			tw.queue.Offer(b, b.Expiration())
 		}
 
@@ -110,7 +110,7 @@ func (tw *TimingWheel) add(t *Timer) bool {
 				nil,
 				// 需要注意的是，这里tick变成了interval
 				unsafe.Pointer(newTimingWheel(
-					tw.interval,
+					tw.interval, // 一格的时间跨度变成了interval, 上层的一格就是下层的总时间跨度
 					tw.wheelSize,
 					currentTime,
 					tw.queue,
@@ -139,14 +139,14 @@ func (tw *TimingWheel) addOrRun(t *Timer) {
 
 func (tw *TimingWheel) advanceClock(expiration int64) {
 	currentTime := atomic.LoadInt64(&tw.currentTime)
-	// 过期时间大于等于（当前时间+tick）
+	// 过期时间大于等于(当前时间+tick), 说明时钟需要往前走了
 	if expiration >= currentTime+tw.tick {
 		// 将currentTime设置为expiration，从而推进currentTime
 		currentTime = truncate(expiration, tw.tick)
 		atomic.StoreInt64(&tw.currentTime, currentTime)
 
 		// Try to advance the clock of the overflow wheel if present
-		// 如果有上层时间轮，那么递归调用上层时间轮的引用
+		// 如果有上层时间轮，那么递归调用上层时间轮的引用(尝试推进上层时间轮的时钟)
 		overflowWheel := atomic.LoadPointer(&tw.overflowWheel)
 		if overflowWheel != nil {
 			(*TimingWheel)(overflowWheel).advanceClock(currentTime)
@@ -171,7 +171,7 @@ func (tw *TimingWheel) Start() {
 				b := elem.(*bucket)
 				// 时间轮会将当前时间 currentTime 往前移动到 bucket的到期时间
 				tw.advanceClock(b.Expiration())
-				// 取出bucket队列的数据，并调用addOrRun方法执行
+				// 取出bucket队列的数据，并调用addOrRun方法执行. 因为有些可能是上层的任务, 上层的需要重新插入
 				b.Flush(tw.addOrRun)
 			case <-tw.exitC:
 				return
@@ -186,12 +186,15 @@ func (tw *TimingWheel) Start() {
 // not wait for the task to complete before returning. If the caller needs to
 // know whether the task is completed, it must coordinate with the task explicitly.
 func (tw *TimingWheel) Stop() {
+	// Start 那边监听的会受到这个 close 信号, 然后结束掉
 	close(tw.exitC)
+	// 等待 Start 那两个 goroutine 结束
 	tw.waitGroup.Wait()
 }
 
 // AfterFunc waits for the duration to elapse and then calls f in its own goroutine.
 // It returns a Timer that can be used to cancel the call using its Stop method.
+// 添加一个任务
 func (tw *TimingWheel) AfterFunc(d time.Duration, f func()) *Timer {
 	t := &Timer{
 		expiration: timeToMs(time.Now().UTC().Add(d)),

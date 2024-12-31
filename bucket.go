@@ -59,7 +59,7 @@ type bucket struct {
 	//
 	// For more explanations, see https://golang.org/pkg/sync/atomic/#pkg-note-BUG
 	// and https://go101.org/article/memory-layout.html.
-	// 任务的过期时间
+	// 任务的到期时间(就是啥时候执行)
 	expiration int64
 
 	mu sync.Mutex
@@ -82,11 +82,15 @@ func (b *bucket) SetExpiration(expiration int64) bool {
 	return atomic.SwapInt64(&b.expiration, expiration) != expiration
 }
 
+// Add 直接把 item 加入到链表中
 func (b *bucket) Add(t *Timer) {
 	b.mu.Lock()
 
+	// 往链表中插入数据, 并放到最后
 	e := b.timers.PushBack(t)
+	// 把 bucket 引用搞过来
 	t.setBucket(b)
+	// 把该 Timer 在链表中的 element 搞过来
 	t.element = e
 
 	b.mu.Unlock()
@@ -113,6 +117,7 @@ func (b *bucket) Remove(t *Timer) bool {
 	return b.remove(t)
 }
 
+// Flush 清空 bucket, 并把 Timer 执行对应的函数
 func (b *bucket) Flush(reinsert func(*Timer)) {
 	var ts []*Timer
 
@@ -133,6 +138,7 @@ func (b *bucket) Flush(reinsert func(*Timer)) {
 	b.SetExpiration(-1) // TODO: Improve the coordination with b.Add()
 
 	for _, t := range ts {
+		// 因为这里面有些可能是上层的任务, 所以这里不能直接执行, 而是尝试重新插入到 timing wheel 中
 		reinsert(t)
 	}
 }
